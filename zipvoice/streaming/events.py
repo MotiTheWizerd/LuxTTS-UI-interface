@@ -41,7 +41,23 @@ class StreamError:
     error: Exception
 
 
-Event = ChunkStarted | ChunkReady | StreamComplete | StreamError
+@dataclass
+class PromptReady:
+    """Fired when prompt audio has been prepared."""
+
+    duration: float
+    tokens_len: int
+
+
+@dataclass
+class TextChunked:
+    """Fired when input text has been tokenized and chunked."""
+
+    total_chunks: int
+    total_tokens: int
+
+
+Event = ChunkStarted | ChunkReady | StreamComplete | StreamError | PromptReady | TextChunked
 
 
 class EventBus:
