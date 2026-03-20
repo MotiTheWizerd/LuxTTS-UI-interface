@@ -67,12 +67,13 @@ class LuxTTS:
         return final_wav.cpu()
 
     @staticmethod
-    def _split_text_for_streaming(text, max_chars=80):
+    def _split_text_for_streaming(text, max_chars=80, min_chars=3):
         """Split text into small chunks for low-latency streaming.
 
-        Splits aggressively at commas, semicolons, colons, and sentence-ending
-        punctuation.  Falls back to word boundaries when a segment exceeds
-        *max_chars* so the first chunk is as small as possible.
+        Splits at commas, semicolons, colons, and sentence-ending punctuation.
+        Falls back to word boundaries when a segment exceeds *max_chars*.
+        Merges fragments shorter than *min_chars* into the previous chunk
+        to avoid producing empty-token segments that crash the model.
         """
         import re
 
@@ -84,18 +85,30 @@ class LuxTTS:
         raw = [c for c in raw if c.strip()]
 
         # Second pass: break oversized segments at word boundaries
-        chunks = []
+        split = []
         for seg in raw:
             while len(seg) > max_chars:
                 cut = seg.rfind(' ', 0, max_chars)
                 if cut <= 0:
                     cut = max_chars
-                chunks.append(seg[:cut].strip())
+                split.append(seg[:cut].strip())
                 seg = seg[cut:].strip()
             if seg:
+                split.append(seg)
+
+        if not split:
+            return [text]
+
+        # Third pass: merge tiny fragments into the previous chunk
+        # so we never send a chunk that tokenizes to zero tokens
+        chunks = [split[0]]
+        for seg in split[1:]:
+            if len(seg) < min_chars:
+                chunks[-1] += ' ' + seg
+            else:
                 chunks.append(seg)
 
-        return chunks if chunks else [text]
+        return chunks
 
     def generate_speech_streaming(self, text, encode_dict, num_steps=4, guidance_scale=3.0, t_shift=0.5, speed=1.0, return_smooth=False):
         """Generator that yields WAV bytes per text chunk for streaming playback.
@@ -120,6 +133,11 @@ class LuxTTS:
         gen_fn = generate_cpu if self.device == 'cpu' else generate
 
         for i, chunk_text in enumerate(chunks):
+            # Guard: skip chunks that would tokenize to nothing
+            test_tokens = self.tokenizer.texts_to_token_ids([chunk_text])
+            if not test_tokens or not test_tokens[0]:
+                continue
+
             wav = gen_fn(
                 prompt_tokens, prompt_features_lens, prompt_features, prompt_rms,
                 chunk_text, self.model, self.vocos, self.tokenizer,
