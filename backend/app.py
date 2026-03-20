@@ -1,9 +1,11 @@
 import sys
 import os
 import io
+import json
+import base64
 import tempfile
 import soundfile as sf
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, Response, stream_with_context
 from flask_cors import CORS
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -74,6 +76,71 @@ def generate():
         return jsonify({"error": str(e)}), 500
     finally:
         os.unlink(tmp_path)
+
+@app.route('/api/generate/stream', methods=['POST'])
+def generate_stream():
+    if 'prompt_audio' not in request.files:
+        return jsonify({"error": "No audio file provided"}), 400
+
+    text = request.form.get('text', '').strip()
+    if not text:
+        return jsonify({"error": "No text provided"}), 400
+
+    audio_file = request.files['prompt_audio']
+    duration = float(request.form.get('duration', 5))
+    rms = float(request.form.get('rms', 0.01))
+    num_steps = int(request.form.get('num_steps', 4))
+    guidance_scale = float(request.form.get('guidance_scale', 3.0))
+    t_shift = float(request.form.get('t_shift', 0.5))
+    speed = float(request.form.get('speed', 1.0))
+    return_smooth = request.form.get('return_smooth', 'false').lower() == 'true'
+
+    ext = os.path.splitext(audio_file.filename)[1] or '.wav'
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+        audio_file.save(tmp.name)
+        tmp_path = tmp.name
+
+    def event_stream():
+        try:
+            yield f"data: {json.dumps({'type': 'status', 'stage': 'encoding'})}\n\n"
+
+            model = get_model()
+            encoded_prompt = model.encode_prompt(tmp_path, duration=duration, rms=rms)
+
+            yield f"data: {json.dumps({'type': 'status', 'stage': 'generating'})}\n\n"
+
+            for chunk in model.generate_speech_streaming(
+                text, encoded_prompt,
+                num_steps=num_steps,
+                guidance_scale=guidance_scale,
+                t_shift=t_shift,
+                speed=speed,
+                return_smooth=return_smooth,
+            ):
+                payload = json.dumps({
+                    "type": "audio",
+                    "chunk_index": chunk["chunk_index"],
+                    "total_chunks": chunk["total_chunks"],
+                    "sample_rate": chunk["sample_rate"],
+                    "is_final": chunk["is_final"],
+                    "audio": base64.b64encode(chunk["audio_bytes"]).decode("ascii"),
+                })
+                yield f"data: {payload}\n\n"
+
+            yield "data: [DONE]\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+        finally:
+            os.unlink(tmp_path)
+
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+        },
+    )
 
 if __name__ == '__main__':
     print("Pre-loading model...")

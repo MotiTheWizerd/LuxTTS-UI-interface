@@ -1,4 +1,9 @@
+import io
+
+import numpy as np
+import soundfile as sf
 import torch
+
 from zipvoice.modeling_utils import process_audio, generate, load_models_gpu, load_models_cpu
 from zipvoice.onnx_modeling import generate_cpu
 
@@ -60,3 +65,78 @@ class LuxTTS:
             final_wav = generate(prompt_tokens, prompt_features_lens, prompt_features, prompt_rms, text, self.model, self.vocos, self.tokenizer, num_step=num_steps, guidance_scale=guidance_scale, t_shift=t_shift, speed=speed)
 
         return final_wav.cpu()
+
+    @staticmethod
+    def _split_text_for_streaming(text, max_chars=80):
+        """Split text into small chunks for low-latency streaming.
+
+        Splits aggressively at commas, semicolons, colons, and sentence-ending
+        punctuation.  Falls back to word boundaries when a segment exceeds
+        *max_chars* so the first chunk is as small as possible.
+        """
+        import re
+
+        # Split at any punctuation that is a natural pause
+        raw = re.split(
+            r'(?<=[.!?;:,，。！？；：、])\s*',
+            text.strip(),
+        )
+        raw = [c for c in raw if c.strip()]
+
+        # Second pass: break oversized segments at word boundaries
+        chunks = []
+        for seg in raw:
+            while len(seg) > max_chars:
+                cut = seg.rfind(' ', 0, max_chars)
+                if cut <= 0:
+                    cut = max_chars
+                chunks.append(seg[:cut].strip())
+                seg = seg[cut:].strip()
+            if seg:
+                chunks.append(seg)
+
+        return chunks if chunks else [text]
+
+    def generate_speech_streaming(self, text, encode_dict, num_steps=4, guidance_scale=3.0, t_shift=0.5, speed=1.0, return_smooth=False):
+        """Generator that yields WAV bytes per text chunk for streaming playback.
+
+        Yields small chunks as soon as each is generated so playback can
+        begin with minimal latency.
+
+        Yields:
+            dict with keys: type, chunk_index, total_chunks, audio_bytes, sample_rate, is_final
+        """
+        prompt_tokens, prompt_features_lens, prompt_features, prompt_rms = encode_dict.values()
+
+        if return_smooth:
+            self.vocos.return_48k = False
+            sample_rate = 24000
+        else:
+            self.vocos.return_48k = True
+            sample_rate = 48000
+
+        chunks = self._split_text_for_streaming(text)
+        total = len(chunks)
+        gen_fn = generate_cpu if self.device == 'cpu' else generate
+
+        for i, chunk_text in enumerate(chunks):
+            wav = gen_fn(
+                prompt_tokens, prompt_features_lens, prompt_features, prompt_rms,
+                chunk_text, self.model, self.vocos, self.tokenizer,
+                num_step=num_steps, guidance_scale=guidance_scale,
+                t_shift=t_shift, speed=speed,
+            )
+
+            wav_np = wav.cpu().numpy().squeeze()
+            buf = io.BytesIO()
+            sf.write(buf, wav_np, sample_rate, format='WAV')
+            buf.seek(0)
+
+            yield {
+                "type": "audio",
+                "chunk_index": i,
+                "total_chunks": total,
+                "audio_bytes": buf.read(),
+                "sample_rate": sample_rate,
+                "is_final": i == total - 1,
+            }

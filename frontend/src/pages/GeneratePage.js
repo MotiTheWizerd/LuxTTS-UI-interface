@@ -1,11 +1,14 @@
 import { useState } from 'react';
 import { HiLightningBolt } from 'react-icons/hi';
+import { HiSignal } from 'react-icons/hi2';
 import AudioDropZone from '../components/AudioDropZone';
 import AudioPlayer from '../components/AudioPlayer';
+import StreamingAudioPlayer from '../components/StreamingAudioPlayer';
+import ModeToggle from '../components/ModeToggle';
 import ParameterSlider from '../components/ParameterSlider';
 import ParameterToggle from '../components/ParameterToggle';
 import AdvancedPanel from '../components/AdvancedPanel';
-import { generateSpeech } from '../api';
+import { generateSpeech, streamSpeech } from '../api';
 
 export default function GeneratePage() {
   const [file, setFile] = useState(null);
@@ -20,8 +23,12 @@ export default function GeneratePage() {
     tShift: 0.5,
     returnSmooth: false,
   });
+  const [mode, setMode] = useState('standard');
   const [isGenerating, setIsGenerating] = useState(false);
   const [resultUrl, setResultUrl] = useState(null);
+  const [streamChunks, setStreamChunks] = useState([]);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [streamStage, setStreamStage] = useState(null); // 'encoding' | 'generating' | null
   const [error, setError] = useState(null);
 
   const updateAdvanced = (key, value) => {
@@ -35,20 +42,57 @@ export default function GeneratePage() {
     setIsGenerating(true);
     setError(null);
 
-    try {
-      const blob = await generateSpeech({
-        promptAudio: file,
-        text: text.trim(),
-        speed,
-        ...advanced,
-      });
+    const params = {
+      promptAudio: file,
+      text: text.trim(),
+      speed,
+      ...advanced,
+    };
 
-      if (resultUrl) URL.revokeObjectURL(resultUrl);
-      setResultUrl(URL.createObjectURL(blob));
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setIsGenerating(false);
+    if (mode === 'streaming') {
+      setStreamChunks([]);
+      setIsStreaming(true);
+      setStreamStage('encoding');
+      setResultUrl(null);
+
+      try {
+        await streamSpeech(params, {
+          onStatus: (stage) => {
+            setStreamStage(stage);
+          },
+          onChunk: (chunk) => {
+            setStreamStage('generating');
+            setStreamChunks((prev) => [...prev, chunk]);
+          },
+          onDone: () => {
+            setIsStreaming(false);
+            setStreamStage(null);
+            setIsGenerating(false);
+          },
+          onError: (err) => {
+            setError(err.message);
+            setIsStreaming(false);
+            setStreamStage(null);
+            setIsGenerating(false);
+          },
+        });
+      } catch (e) {
+        setError(e.message);
+        setIsStreaming(false);
+        setStreamStage(null);
+        setIsGenerating(false);
+      }
+    } else {
+      setStreamChunks([]);
+      try {
+        const blob = await generateSpeech(params);
+        if (resultUrl) URL.revokeObjectURL(resultUrl);
+        setResultUrl(URL.createObjectURL(blob));
+      } catch (e) {
+        setError(e.message);
+      } finally {
+        setIsGenerating(false);
+      }
     }
   };
 
@@ -156,31 +200,36 @@ export default function GeneratePage() {
         </AdvancedPanel>
       </div>
 
-      {/* Generate Button */}
-      <button
-        onClick={handleGenerate}
-        disabled={!canGenerate}
-        className={`w-full py-3 rounded-lg font-medium text-sm flex items-center justify-center gap-2 transition-colors ${
-          canGenerate
-            ? 'bg-indigo-600 hover:bg-indigo-500 text-white'
-            : 'bg-gray-800 text-gray-600 cursor-not-allowed'
-        }`}
-      >
-        {isGenerating ? (
-          <>
-            <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
-            Generating...
-          </>
-        ) : (
-          <>
-            <HiLightningBolt />
-            Generate Speech
-          </>
-        )}
-      </button>
+      {/* Mode Toggle + Generate Button */}
+      <div className="flex items-center gap-3">
+        <ModeToggle mode={mode} onChange={setMode} />
+        <button
+          onClick={handleGenerate}
+          disabled={!canGenerate}
+          className={`flex-1 py-3 rounded-lg font-medium text-sm flex items-center justify-center gap-2 transition-colors ${
+            canGenerate
+              ? 'bg-indigo-600 hover:bg-indigo-500 text-white'
+              : 'bg-gray-800 text-gray-600 cursor-not-allowed'
+          }`}
+        >
+          {isGenerating ? (
+            <>
+              <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              {mode === 'streaming'
+                ? streamStage === 'encoding' ? 'Encoding voice...' : 'Streaming...'
+                : 'Generating...'}
+            </>
+          ) : (
+            <>
+              {mode === 'streaming' ? <HiSignal /> : <HiLightningBolt />}
+              {mode === 'streaming' ? 'Stream Speech' : 'Generate Speech'}
+            </>
+          )}
+        </button>
+      </div>
 
       {/* Error */}
       {error && (
@@ -194,6 +243,15 @@ export default function GeneratePage() {
         <div className="bg-gray-900 rounded-lg border border-gray-800 p-5">
           <h3 className="text-sm font-medium text-gray-300 mb-3">Generated Audio</h3>
           <AudioPlayer src={resultUrl} />
+        </div>
+      )}
+
+      {(streamChunks.length > 0 || isStreaming) && (
+        <div className="bg-gray-900 rounded-lg border border-gray-800 p-5">
+          <h3 className="text-sm font-medium text-gray-300 mb-3">
+            {isStreaming ? 'Streaming Audio' : 'Streamed Audio'}
+          </h3>
+          <StreamingAudioPlayer chunks={streamChunks} isStreaming={isStreaming} stage={streamStage} />
         </div>
       )}
     </div>
