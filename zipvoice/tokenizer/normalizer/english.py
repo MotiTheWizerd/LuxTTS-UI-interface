@@ -1,17 +1,8 @@
 import re
-from abc import ABC, abstractmethod
 
-import cn2an
 import inflect
 
-
-class TextNormalizer(ABC):
-    """Abstract base class for text normalization, defining common interface."""
-
-    @abstractmethod
-    def normalize(self, text: str) -> str:
-        """Normalize text."""
-        raise NotImplementedError
+from zipvoice.tokenizer.normalizer.base import TextNormalizer
 
 
 class EnglishTextNormalizer(TextNormalizer):
@@ -64,7 +55,6 @@ class EnglishTextNormalizer(TextNormalizer):
         including number and abbreviation expansion."""
         text = self.expand_abbreviations(text)
         text = self.normalize_numbers(text)
-
         return text
 
     def fraction_to_words(self, numerator, denominator):
@@ -155,16 +145,4 @@ class EnglishTextNormalizer(TextNormalizer):
     def expand_abbreviations(self, text):
         for regex, replacement in self._abbreviations:
             text = re.sub(regex, replacement, text)
-        return text
-
-
-class ChineseTextNormalizer(TextNormalizer):
-    """
-    A class to handle preprocessing of Chinese text including normalization.
-    """
-
-    def normalize(self, text: str) -> str:
-        """Normalize text."""
-        # Convert numbers to Chinese
-        text = cn2an.transform(text, "an2cn")
         return text
