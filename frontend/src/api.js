@@ -2,7 +2,11 @@ const BASE_URL = localStorage.getItem('backendUrl') || 'http://localhost:5000';
 
 function buildFormData(params) {
   const formData = new FormData();
-  formData.append('prompt_audio', params.promptAudio);
+  if (params.voiceId) {
+    formData.append('voice_id', params.voiceId);
+  } else if (params.promptAudio) {
+    formData.append('prompt_audio', params.promptAudio);
+  }
   formData.append('text', params.text);
   formData.append('duration', params.duration);
   formData.append('rms', params.rms);
@@ -88,6 +92,45 @@ export async function streamSpeech(params, { onStatus, onChunk, onDone, onError 
       }
     }
   }
+}
+
+// --- Voice management ---
+
+export async function listVoices() {
+  const res = await fetch(`${BASE_URL}/api/voices`);
+  if (!res.ok) throw new Error('Failed to list voices');
+  const data = await res.json();
+  return data.voices;
+}
+
+export async function cloneVoice(audioFile, name, { duration = 5, rms = 0.001 } = {}) {
+  const formData = new FormData();
+  formData.append('prompt_audio', audioFile);
+  formData.append('name', name);
+  formData.append('duration', duration);
+  formData.append('rms', rms);
+
+  const res = await fetch(`${BASE_URL}/api/voices/clone`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Clone failed' }));
+    throw new Error(err.error || 'Clone failed');
+  }
+  return res.json();
+}
+
+export async function deleteVoice(voiceId) {
+  const res = await fetch(`${BASE_URL}/api/voices/${voiceId}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Delete failed' }));
+    throw new Error(err.error || 'Delete failed');
+  }
+  return res.json();
 }
 
 export async function checkHealth() {

@@ -8,6 +8,7 @@ from flask_cors import CORS
 
 from backend.routes.generate import generate_bp
 from backend.routes.health import health_bp
+from backend.routes.voice import voice_bp
 from backend.services.model_manager import model_manager
 
 
@@ -16,6 +17,7 @@ def create_app() -> Flask:
     CORS(app)
     app.register_blueprint(health_bp)
     app.register_blueprint(generate_bp)
+    app.register_blueprint(voice_bp)
     return app
 
 

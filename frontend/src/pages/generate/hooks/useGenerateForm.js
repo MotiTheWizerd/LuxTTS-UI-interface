@@ -11,6 +11,7 @@ const DEFAULT_ADVANCED = {
 
 export default function useGenerateForm() {
   const [file, setFile] = useState(null);
+  const [voiceId, setVoiceId] = useState(null);
   const [text, setText] = useState('');
   const [speed, setSpeed] = useState(1.0);
   const [mode, setMode] = useState('standard');
@@ -27,17 +28,26 @@ export default function useGenerateForm() {
 
   const clearFile = useCallback(() => setFile(null), []);
 
+  const selectVoice = useCallback((id) => {
+    setVoiceId(id);
+    setFile(null);
+  }, []);
+
+  const clearVoice = useCallback(() => setVoiceId(null), []);
+
   const buildParams = useCallback(() => ({
-    promptAudio: file,
+    promptAudio: voiceId ? null : file,
+    voiceId: voiceId || null,
     text: text.trim(),
     speed,
     ...advanced,
-  }), [file, text, speed, advanced]);
+  }), [file, voiceId, text, speed, advanced]);
 
-  const canGenerate = file && text.trim();
+  const canGenerate = (file || voiceId) && text.trim();
 
   return {
     file, setFile, clearFile,
+    voiceId, selectVoice, clearVoice,
     text, setText,
     speed, setSpeed,
     mode, setMode,

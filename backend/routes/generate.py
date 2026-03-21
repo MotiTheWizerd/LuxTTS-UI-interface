@@ -5,6 +5,7 @@ import soundfile as sf
 from flask import Blueprint, Response, jsonify, request, send_file, stream_with_context
 
 from backend.services.model_manager import model_manager
+from backend.services.voice_store import voice_store
 from backend.utils.params import GenerateParams
 from backend.utils.sse import sse_done, sse_event
 
@@ -51,25 +52,35 @@ def generate():
 
 @generate_bp.route("/api/generate/stream", methods=["POST"])
 def generate_stream():
-    if "prompt_audio" not in request.files:
-        return jsonify({"error": "No audio file provided"}), 400
-
     params = GenerateParams.from_request(request)
     if not params.text:
         return jsonify({"error": "No text provided"}), 400
 
-    # Read the uploaded bytes eagerly — the request's file stream will be
-    # closed by the time the generator runs.
-    prompt_bytes = io.BytesIO(request.files["prompt_audio"].read())
+    # Resolve the encoded prompt: saved voice_id or fresh upload
+    voice_id = request.form.get("voice_id", "").strip()
+    if voice_id:
+        try:
+            encoded_prompt = voice_store.load(voice_id)
+        except FileNotFoundError:
+            return jsonify({"error": f"Voice '{voice_id}' not found"}), 404
+        prompt_bytes = None
+    elif "prompt_audio" in request.files:
+        prompt_bytes = io.BytesIO(request.files["prompt_audio"].read())
+        encoded_prompt = None
+    else:
+        return jsonify({"error": "Provide voice_id or prompt_audio"}), 400
 
     def event_stream():
         try:
-            yield sse_event({"type": "status", "stage": "encoding"})
-
-            model = model_manager.get_model()
-            encoded_prompt = model.encode_prompt(
-                prompt_bytes, duration=params.duration, rms=params.rms
-            )
+            nonlocal encoded_prompt
+            if encoded_prompt is None:
+                yield sse_event({"type": "status", "stage": "encoding"})
+                model = model_manager.get_model()
+                encoded_prompt = model.encode_prompt(
+                    prompt_bytes, duration=params.duration, rms=params.rms
+                )
+            else:
+                model = model_manager.get_model()
 
             yield sse_event({"type": "status", "stage": "generating"})
 

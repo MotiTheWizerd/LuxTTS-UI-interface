@@ -20,6 +20,9 @@ export default function GeneratePage() {
         file={form.file}
         onFileSelect={form.setFile}
         onRemove={form.clearFile}
+        voiceId={form.voiceId}
+        onSelectVoice={form.selectVoice}
+        onClearVoice={form.clearVoice}
       />
 
       <TextParamsSection
