@@ -1,42 +1,50 @@
-import { useCallback, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { HiDownload } from 'react-icons/hi';
-import useChunkQueue from '../hooks/useChunkQueue';
-import useAudioPlayback from '../hooks/useAudioPlayback';
+import useAudioScheduler from '../hooks/useAudioScheduler';
 import PlaybackControls from './PlaybackControls';
 
 export default function StreamingAudioPlayer({ chunks, isStreaming, stage }) {
   const {
-    audioRef,
     playing,
     currentChunk,
     progress,
-    isActive,
-    playChunk,
+    scheduleChunk,
     togglePlay,
-    markComplete,
-  } = useAudioPlayback();
+    reset,
+  } = useAudioScheduler();
 
-  // Stable ref so the queue callback always sees the latest playNext
-  const playNextRef = useRef();
+  const processedCountRef = useRef(0);
+  const rawChunksRef = useRef([]);
 
-  const { dequeue, allBlobs } = useChunkQueue(chunks, () => {
-    if (!isActive.current) playNextRef.current();
-  });
+  // Schedule new chunks as they arrive — no queue, straight to the timeline
+  useEffect(() => {
+    if (!chunks || chunks.length === 0) return;
+    if (processedCountRef.current >= chunks.length) return;
 
-  const playNext = useCallback(() => {
-    const next = dequeue();
-    if (next) {
-      playChunk(next, () => playNextRef.current());
-    } else {
-      markComplete();
+    const newChunks = chunks.slice(processedCountRef.current);
+    processedCountRef.current = chunks.length;
+
+    for (const chunk of newChunks) {
+      rawChunksRef.current.push(chunk.audio);
+      scheduleChunk(chunk);
     }
-  }, [dequeue, playChunk, markComplete]);
+  }, [chunks, scheduleChunk]);
 
-  playNextRef.current = playNext;
+  // Reset when a new generation starts (chunks cleared)
+  useEffect(() => {
+    if (!chunks || chunks.length === 0) {
+      processedCountRef.current = 0;
+      rawChunksRef.current = [];
+      reset();
+    }
+  }, [chunks, reset]);
 
   const handleDownload = () => {
-    if (allBlobs.current.length === 0) return;
-    const merged = new Blob(allBlobs.current, { type: 'audio/wav' });
+    const buffers = rawChunksRef.current;
+    if (buffers.length === 0) return;
+    // Merge ArrayBuffers into a single WAV blob for download
+    const blobs = buffers.map((buf) => new Blob([buf], { type: 'audio/wav' }));
+    const merged = new Blob(blobs, { type: 'audio/wav' });
     const url = URL.createObjectURL(merged);
     const a = document.createElement('a');
     a.href = url;
@@ -50,8 +58,6 @@ export default function StreamingAudioPlayer({ chunks, isStreaming, stage }) {
 
   return (
     <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4">
-      <audio ref={audioRef} className="hidden" />
-
       <div className="flex items-center gap-3">
         <PlaybackControls
           playing={playing}

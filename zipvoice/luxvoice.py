@@ -1,4 +1,5 @@
 import io
+import logging
 
 import numpy as np
 import soundfile as sf
@@ -133,17 +134,20 @@ class LuxTTS:
         gen_fn = generate_cpu if self.device == 'cpu' else generate
 
         for i, chunk_text in enumerate(chunks):
-            # Guard: skip chunks that would tokenize to nothing
-            test_tokens = self.tokenizer.texts_to_token_ids([chunk_text])
-            if not test_tokens or not test_tokens[0]:
+            try:
+                wav = gen_fn(
+                    prompt_tokens, prompt_features_lens, prompt_features, prompt_rms,
+                    chunk_text, self.model, self.vocos, self.tokenizer,
+                    num_step=num_steps, guidance_scale=guidance_scale,
+                    t_shift=t_shift, speed=speed,
+                )
+            except Exception as e:
+                logging.error(f"Chunk {i}/{total} failed (text={chunk_text!r}): {e}")
                 continue
 
-            wav = gen_fn(
-                prompt_tokens, prompt_features_lens, prompt_features, prompt_rms,
-                chunk_text, self.model, self.vocos, self.tokenizer,
-                num_step=num_steps, guidance_scale=guidance_scale,
-                t_shift=t_shift, speed=speed,
-            )
+            if wav is None:
+                logging.warning(f"Chunk {i}/{total} skipped — empty tokens (text={chunk_text!r})")
+                continue
 
             wav_np = wav.cpu().numpy().squeeze()
             buf = io.BytesIO()

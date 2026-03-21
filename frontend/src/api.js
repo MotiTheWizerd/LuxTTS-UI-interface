@@ -71,18 +71,17 @@ export async function streamSpeech(params, { onStatus, onChunk, onDone, onError 
           continue;
         }
 
-        // Decode base64 WAV to a Blob
+        // Decode base64 WAV to ArrayBuffer for Web Audio API
         const binary = atob(parsed.audio);
         const bytes = new Uint8Array(binary.length);
         for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        const blob = new Blob([bytes], { type: 'audio/wav' });
 
         onChunk?.({
           chunkIndex: parsed.chunk_index,
           totalChunks: parsed.total_chunks,
           sampleRate: parsed.sample_rate,
           isFinal: parsed.is_final,
-          audio: blob,
+          audio: bytes.buffer,
         });
       } catch (e) {
         onError?.(e);

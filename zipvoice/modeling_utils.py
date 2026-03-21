@@ -63,6 +63,8 @@ def process_audio(audio, transcriber, tokenizer, feature_extractor, device, targ
 
 def generate(prompt_tokens, prompt_features_lens, prompt_features, prompt_rms, text, model, vocoder, tokenizer, num_step=4, guidance_scale=3.0, speed=1.0, t_shift=0.5, target_rms=0.1):
     tokens = tokenizer.texts_to_token_ids([text])
+    if not tokens or not tokens[0]:
+        return None
     device = next(model.parameters()).device  # Auto-detect device
 
     speed = speed * 1.3
