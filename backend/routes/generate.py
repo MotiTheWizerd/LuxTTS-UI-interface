@@ -12,11 +12,6 @@ from backend.utils.temp_file import temp_audio_file
 generate_bp = Blueprint("generate", __name__)
 
 
-@generate_bp.route("/api/health")
-def health():
-    return jsonify({"status": "ok", "model_loaded": model_manager.is_loaded})
-
-
 @generate_bp.route("/api/generate", methods=["POST"])
 def generate():
     if "prompt_audio" not in request.files:
