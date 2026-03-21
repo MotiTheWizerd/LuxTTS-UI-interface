@@ -67,60 +67,15 @@ class LuxTTS:
 
         return final_wav.cpu()
 
-    @staticmethod
-    def _split_text_for_streaming(text, max_chars=80, min_chars=3):
-        """Split text into small chunks for low-latency streaming.
-
-        Splits at commas, semicolons, colons, and sentence-ending punctuation.
-        Falls back to word boundaries when a segment exceeds *max_chars*.
-        Merges fragments shorter than *min_chars* into the previous chunk
-        to avoid producing empty-token segments that crash the model.
-        """
-        import re
-
-        # Split at any punctuation that is a natural pause
-        raw = re.split(
-            r'(?<=[.!?;:,，。！？；：、])\s*',
-            text.strip(),
-        )
-        raw = [c for c in raw if c.strip()]
-
-        # Second pass: break oversized segments at word boundaries
-        split = []
-        for seg in raw:
-            while len(seg) > max_chars:
-                cut = seg.rfind(' ', 0, max_chars)
-                if cut <= 0:
-                    cut = max_chars
-                split.append(seg[:cut].strip())
-                seg = seg[cut:].strip()
-            if seg:
-                split.append(seg)
-
-        if not split:
-            return [text]
-
-        # Third pass: merge tiny fragments into the previous chunk
-        # so we never send a chunk that tokenizes to zero tokens
-        chunks = [split[0]]
-        for seg in split[1:]:
-            if len(seg) < min_chars:
-                chunks[-1] += ' ' + seg
-            else:
-                chunks.append(seg)
-
-        return chunks
-
     def generate_speech_streaming(self, text, encode_dict, num_steps=4, guidance_scale=3.0, t_shift=0.5, speed=1.0, return_smooth=False):
         """Generator that yields WAV bytes per text chunk for streaming playback.
 
-        Yields small chunks as soon as each is generated so playback can
-        begin with minimal latency.
+        Delegates to StreamingPipeline for event-driven, cross-faded chunking.
 
         Yields:
             dict with keys: type, chunk_index, total_chunks, audio_bytes, sample_rate, is_final
         """
-        prompt_tokens, prompt_features_lens, prompt_features, prompt_rms = encode_dict.values()
+        from zipvoice.streaming.pipeline import StreamingConfig, StreamingPipeline
 
         if return_smooth:
             self.vocos.return_48k = False
@@ -129,36 +84,34 @@ class LuxTTS:
             self.vocos.return_48k = True
             sample_rate = 48000
 
-        chunks = self._split_text_for_streaming(text)
-        total = len(chunks)
-        gen_fn = generate_cpu if self.device == 'cpu' else generate
+        config = StreamingConfig(
+            num_step=num_steps,
+            guidance_scale=guidance_scale,
+            speed=speed,
+            t_shift=t_shift,
+            sampling_rate=sample_rate,
+        )
 
-        for i, chunk_text in enumerate(chunks):
-            try:
-                wav = gen_fn(
-                    prompt_tokens, prompt_features_lens, prompt_features, prompt_rms,
-                    chunk_text, self.model, self.vocos, self.tokenizer,
-                    num_step=num_steps, guidance_scale=guidance_scale,
-                    t_shift=t_shift, speed=speed,
-                )
-            except Exception as e:
-                logging.error(f"Chunk {i}/{total} failed (text={chunk_text!r}): {e}")
-                continue
+        pipeline = StreamingPipeline(
+            model=self.model,
+            vocoder=self.vocos,
+            tokenizer=self.tokenizer,
+            feature_extractor=self.feature_extractor,
+            device=self.device,
+            config=config,
+        )
 
-            if wav is None:
-                logging.warning(f"Chunk {i}/{total} skipped — empty tokens (text={chunk_text!r})")
-                continue
-
-            wav_np = wav.cpu().numpy().squeeze()
+        for chunk in pipeline.stream(text, encoded_prompt=encode_dict):
+            wav_np = chunk.audio.cpu().numpy().squeeze()
             buf = io.BytesIO()
-            sf.write(buf, wav_np, sample_rate, format='WAV')
+            sf.write(buf, wav_np, chunk.sample_rate, format='WAV')
             buf.seek(0)
 
             yield {
                 "type": "audio",
-                "chunk_index": i,
-                "total_chunks": total,
+                "chunk_index": chunk.chunk_index,
+                "total_chunks": chunk.total_chunks,
                 "audio_bytes": buf.read(),
-                "sample_rate": sample_rate,
-                "is_final": i == total - 1,
+                "sample_rate": chunk.sample_rate,
+                "is_final": chunk.is_final,
             }

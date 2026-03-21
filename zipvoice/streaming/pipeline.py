@@ -79,28 +79,56 @@ class StreamingPipeline:
     def stream(
         self,
         text: str,
-        prompt_text: str,
-        prompt_wav_path: str,
+        prompt_text: str = None,
+        prompt_wav_path: str = None,
+        *,
+        encoded_prompt: dict = None,
     ) -> Generator[AudioChunk, None, None]:
         """Generate audio chunks as a Python generator.
 
         Yields AudioChunk objects as each text segment is synthesized.
         Cross-fade is applied incrementally between chunks.
+
+        Either provide (prompt_text, prompt_wav_path) to encode from scratch,
+        or pass encoded_prompt from LuxTTS.encode_prompt() to reuse an
+        already-encoded prompt.
         """
         cfg = self.config
         buffer = CrossFadeBuffer(
             fade_duration=cfg.fade_duration, sample_rate=cfg.sampling_rate
         )
 
-        # Prepare prompt (one-time cost)
-        prompt = self._prompt_processor.prepare(
-            prompt_wav_path,
-            prompt_text,
-            sampling_rate=cfg.sampling_rate,
-            target_rms=cfg.target_rms,
-            feat_scale=cfg.feat_scale,
-            events=self.events,
-        )
+        if encoded_prompt is not None:
+            # Reuse pre-encoded prompt from LuxTTS.encode_prompt()
+            from zipvoice.streaming.stages.prompt import PromptData
+
+            prompt_tokens = encoded_prompt["prompt_tokens"]
+            prompt_features = encoded_prompt["prompt_features"]
+            prompt_features_lens = encoded_prompt["prompt_features_lens"]
+            prompt_rms = encoded_prompt["prompt_rms"]
+
+            # Estimate duration and token length from the encoded data
+            duration = prompt_features_lens[0].item() / (cfg.sampling_rate / 320)
+            tokens_str_len = sum(len(t) for t in prompt_tokens)
+
+            prompt = PromptData(
+                features=prompt_features,
+                wav=None,
+                tokens=prompt_tokens,
+                rms=prompt_rms,
+                tokens_str_len=tokens_str_len,
+                duration=duration,
+            )
+        else:
+            # Prepare prompt from scratch (one-time cost)
+            prompt = self._prompt_processor.prepare(
+                prompt_wav_path,
+                prompt_text,
+                sampling_rate=cfg.sampling_rate,
+                target_rms=cfg.target_rms,
+                feat_scale=cfg.feat_scale,
+                events=self.events,
+            )
 
         # Chunk the input text
         chunked_tokens, _ = self._chunker.chunk(
@@ -111,8 +139,10 @@ class StreamingPipeline:
             events=self.events,
         )
         total_chunks = len(chunked_tokens)
+        logging.info(f"StreamingPipeline: {total_chunks} chunks from text")
 
         total_samples = 0
+        yielded_count = 0
         for i, tokens in enumerate(chunked_tokens):
             is_last = i == total_chunks - 1
 
@@ -135,7 +165,11 @@ class StreamingPipeline:
                 )
             except Exception as ex:
                 self.events.emit(StreamError(chunk_index=i, error=ex))
-                logging.error(f"Chunk {i} failed: {ex}")
+                logging.error(f"Chunk {i}/{total_chunks} failed (tokens={len(tokens)}): {ex}")
+                continue
+
+            if raw_audio is None:
+                logging.warning(f"Chunk {i}/{total_chunks} skipped — empty tokens")
                 continue
 
             playable = buffer.push(raw_audio, is_final=is_last)
@@ -143,11 +177,12 @@ class StreamingPipeline:
 
             chunk = AudioChunk(
                 audio=playable,
-                chunk_index=i,
+                chunk_index=yielded_count,
                 total_chunks=total_chunks,
                 is_final=is_last,
                 sample_rate=cfg.sampling_rate,
             )
+            yielded_count += 1
 
             self.events.emit(
                 ChunkReady(
@@ -167,7 +202,7 @@ class StreamingPipeline:
             total_samples += remaining.shape[-1]
             yield AudioChunk(
                 audio=remaining,
-                chunk_index=total_chunks - 1,
+                chunk_index=yielded_count,
                 total_chunks=total_chunks,
                 is_final=True,
                 sample_rate=cfg.sampling_rate,
