@@ -1,6 +1,6 @@
 const BASE_URL = localStorage.getItem('backendUrl') || 'http://localhost:5000';
 
-export async function generateSpeech(params) {
+function buildFormData(params) {
   const formData = new FormData();
   formData.append('prompt_audio', params.promptAudio);
   formData.append('text', params.text);
@@ -11,10 +11,13 @@ export async function generateSpeech(params) {
   formData.append('t_shift', params.tShift);
   formData.append('speed', params.speed);
   formData.append('return_smooth', params.returnSmooth);
+  return formData;
+}
 
+export async function generateSpeech(params) {
   const res = await fetch(`${BASE_URL}/api/generate`, {
     method: 'POST',
-    body: formData,
+    body: buildFormData(params),
   });
 
   if (!res.ok) {
@@ -26,20 +29,9 @@ export async function generateSpeech(params) {
 }
 
 export async function streamSpeech(params, { onStatus, onChunk, onDone, onError }) {
-  const formData = new FormData();
-  formData.append('prompt_audio', params.promptAudio);
-  formData.append('text', params.text);
-  formData.append('duration', params.duration);
-  formData.append('rms', params.rms);
-  formData.append('num_steps', params.numSteps);
-  formData.append('guidance_scale', params.guidanceScale);
-  formData.append('t_shift', params.tShift);
-  formData.append('speed', params.speed);
-  formData.append('return_smooth', params.returnSmooth);
-
   const res = await fetch(`${BASE_URL}/api/generate/stream`, {
     method: 'POST',
-    body: formData,
+    body: buildFormData(params),
   });
 
   if (!res.ok) {
